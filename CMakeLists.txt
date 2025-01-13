@@ -14,3 +14,8 @@ target_link_libraries(client_api ${OS_LIBS})
 add_executable(eth_data_forwarder server/server.c)
 target_include_directories(eth_data_forwarder PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
 #target_link_libraries(eth_data_forwarder soem)
+
+add_executable(eth_data_client client/client.c)
+target_include_directories(eth_data_client PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
+target_include_directories(eth_data_client PUBLIC ${CMAKE_CURRENT_LIST_DIR}/client_api)
+target_link_libraries(eth_data_client client_api)

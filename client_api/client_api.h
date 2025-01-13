@@ -10,10 +10,10 @@
 typedef void (*recv_func_cb_t)(unsigned char * data, int data_len);
 
 //connect the server using ip address
-inline int connect_server(const char * server_ip, recv_func_cb_t recv_func_cb);
+int connect_server(const char * server_ip, recv_func_cb_t recv_func_cb);
 
 //disconnect the server
-inline void disconnect_server(void);
+void disconnect_server(void);
 
 
 #endif
