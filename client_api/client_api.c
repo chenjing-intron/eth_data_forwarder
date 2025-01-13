@@ -8,129 +8,11 @@
 #include <sched.h>
 #include <arpa/inet.h>
 #include <pthread.h>
-#include "arm_control_packet.h"
-#include "arm_control_api.h"
 #include <semaphore.h>
 #include <time.h>
 #include <errno.h>
-
-typedef struct arm_control_cmd
-{
-    uint32 cmd_index;
-    arm_control_request_t req;
-    arm_control_response_t resp;
-    sem_t sem;
-    struct arm_control_cmd *next_cmd;
-} arm_control_cmd_t;
-
-static uint32 cmd_index = 0;
-static pthread_mutex_t cmd_list_mutex;
-static arm_control_cmd_t *cmd_list = NULL;
-
-static arm_control_cmd_t *create_arm_control_cmd(void)
-{
-    arm_control_cmd_t *new_cmd = (arm_control_cmd_t *)malloc(sizeof(arm_control_cmd_t));
-    if (!new_cmd)
-    {
-        printf("new command fail\r\n");
-        return NULL;
-    }
-
-    memset((void *)new_cmd, 0, sizeof(arm_control_cmd_t));
-
-    pthread_mutex_lock(&cmd_list_mutex);
-
-    cmd_index++;
-    new_cmd->cmd_index = cmd_index;
-    sem_init(&new_cmd->sem, 0, 0);
-
-    if (!cmd_list)
-    {
-        cmd_list = new_cmd;
-    }
-    else
-    {
-        cmd_list->next_cmd = new_cmd;
-    }
-
-    pthread_mutex_unlock(&cmd_list_mutex);
-
-    return new_cmd;
-}
-
-static void destroy_arm_control_cmd(arm_control_cmd_t *cmd)
-{
-    pthread_mutex_lock(&cmd_list_mutex);
-    if (cmd_list == cmd)
-    {
-        cmd_list = cmd_list->next_cmd;
-    }
-    else
-    {
-        arm_control_cmd_t *prev = cmd_list;
-        while (prev->next_cmd)
-        {
-            if (prev->next_cmd == cmd)
-            {
-                prev->next_cmd = cmd->next_cmd;
-            }
-            else
-            {
-                prev = prev->next_cmd;
-            }
-        }
-    }
-    pthread_mutex_unlock(&cmd_list_mutex);
-
-    sem_destroy(&cmd->sem);
-    free(cmd);
-}
-
-static void clean_arm_control_cmd(void)
-{
-    arm_control_cmd_t * cmd = NULL;
-
-    pthread_mutex_lock(&cmd_list_mutex);
-    while (cmd_list != NULL)
-    {
-        cmd = cmd_list;
-        cmd_list = cmd_list->next_cmd;
-        
-        sem_destroy(&cmd->sem);
-        free(cmd);
-    }
-    pthread_mutex_unlock(&cmd_list_mutex);
-}
-
-static void notify_response(const arm_control_response_t *resp)
-{
-    arm_control_cmd_t *p = NULL;
-
-    pthread_mutex_lock(&cmd_list_mutex);
-
-    p = cmd_list;
-    while (p != NULL)
-    {
-        if (p->cmd_index == resp->cmd_index)
-        {
-            break;
-        }
-        else
-        {
-            p = p->next_cmd;
-        }
-    }
-
-    if (p != NULL)
-    {
-        p->resp = *resp;
-        sem_post(&p->sem);
-    }
-
-    pthread_mutex_unlock(&cmd_list_mutex);
-}
-
-#define DEG_CONVERSION_PARAM (4599.0f)
+#include "client_api_packet.h"
+#include "client_api.h"
 
 static int filed_data_len[FIELD_NUM] =
     {
@@ -145,6 +27,7 @@ typedef struct tcp_client
     int fd;
     int valid;
     int recv_state;
+    recv_func_cb_t  recv_func_cb;
     uint8_t data[MAX_COMMAND_DATA_LEN + 6];
     field_data_t field[FIELD_NUM];
 } tcp_client_t;
@@ -155,6 +38,14 @@ static tcp_client_t client;
 static struct sockaddr_in serv_addr;
 
 static pthread_t tcp_receive_listen;
+
+static void notify_response(uint8 * data, int data_len)
+{
+    if (client.recv_func_cb != NULL)
+    {
+        client.recv_func_cb(data, data_len);
+    }
+}
 
 static void init_client_rx_field(tcp_client_t *client_p)
 {
@@ -270,25 +161,24 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
                     {
                         // got a command req or resp
                         field_p = &client_p->field[RECV_DATA];
-                        if (field_p->actual_len == CMD_RESP_DATA_LENGTH)
+                        if (field_p->actual_len > (int)sizeof(uint16))
                         {
-                            arm_control_response_t resp;
-                            int j = 0;
-                            memset((void *)&resp, 0, sizeof(resp));
-                            memcpy((void *)&resp.command, field_p->data, CMD_RESP_DATA_LENGTH);
+                            int data_len = field_p->actual_len - sizeof(uint16);
+                            
+                            uint16 command = ntohs(*((uint16*)field_p->data));
 
-                            resp.command = ntohs(resp.command);
-                            resp.command_result = ntohs(resp.command_result);
-                            resp.cmd_index = ntohl(resp.cmd_index);
-                            resp.action_index = ntohl(resp.action_index);
-                            resp.gripper_state = ntohs(resp.gripper_state);
-
-                            for (j = 0; j < MAX_JOINT_NUM; j++)
+                            if (CLIENT_CMD_REGISTER_GROUP == command)
                             {
-                                resp.joint_pos[j] = ntohl(resp.joint_pos[j]);
+                                
+                            } 
+                            else if (CLIENT_CMD_TRANSFER_DATA == command)
+                            {
+                                notify_response(field_p->data + sizeof(uint16), data_len);
                             }
-
-                            notify_response(&resp);
+                            else
+                            {
+                                printf("error:wrong client cmd, cmd=0x%x\r\n", command);
+                            }                            
                         }
                         else
                         {
@@ -414,13 +304,14 @@ static void *client_receive_func(void *ptr)
     return NULL;
 }
 
+static int sent_group_register_request(void);
+
 // connect the arm using ip address
-int connect_arm(const char *server_ip)
+int connect_server(const char *server_ip, recv_func_cb_t recv_func_cb)
 {
-    int sock = -1;
+    int sock = -1, ret = ERR_OK;
 
     init_client_rx_field(&client);
-    pthread_mutex_init(&cmd_list_mutex, NULL);
 
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
     {
@@ -429,7 +320,7 @@ int connect_arm(const char *server_ip)
     }
 
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(7071);
+    serv_addr.sin_port = htons(SERVER_PORT_NUM);
 
     // Convert IPv4 and IPv6 addresses from text to binary form
     if (inet_pton(AF_INET, server_ip, &serv_addr.sin_addr) <= 0)
@@ -445,6 +336,7 @@ int connect_arm(const char *server_ip)
     }
 
     client.fd = sock;
+    client.recv_func_cb = recv_func_cb;
 
     pthread_attr_t attr;
     pthread_attr_init(&attr);
@@ -459,6 +351,12 @@ int connect_arm(const char *server_ip)
 
     pthread_attr_destroy(&attr); 
 
+    ret = sent_group_register_request();
+    if (ret != ERR_OK)
+    {
+        printf("sent group_register_request fialed,ret=%d\r\n", ret);
+    }
+
     return 0;
 
 err_out:
@@ -467,14 +365,12 @@ err_out:
     return -1;
 }
 
-void disconnect_arm(void)
+void disconnect_server(void)
 {
     close(client.fd);
     client.fd = -1;
     pthread_cancel(tcp_receive_listen);
     pthread_join(tcp_receive_listen, NULL); 
-    clean_arm_control_cmd();
-    pthread_mutex_destroy(&cmd_list_mutex);
 }
 
 static uint16 cal_checksum(uint8 *data, int data_len)
@@ -489,24 +385,13 @@ static uint16 cal_checksum(uint8 *data, int data_len)
     return cal_checksum;
 }
 
-static int send_arm_cmd(const arm_control_request_t *req, arm_control_response_t *resp)
+static int send_client_data(const unsigned char * data, int data_len)
 {
-    arm_control_cmd_t *cmd = create_arm_control_cmd();
     ssize_t send_num = 0;
-    struct timespec ts;
     int result = ERR_OK;
 
-    if (!cmd)
-    {
-        return ERR_NEW_CMD_FAIL;
-    }
-
-    cmd->req = *req;
-    cmd->req.cmd_index = htonl(cmd->cmd_index);
-    cmd->req.checksum = htons(cal_checksum((uint8 *)&cmd->req.command, CMD_REQ_DATA_LENGTH));
-
-    send_num = send(client.fd, &cmd->req, sizeof(arm_control_request_t), 0);
-    if (send_num != sizeof(arm_control_request_t))
+    send_num = send(client.fd, data, data_len, 0);
+    if (send_num != data_len)
     {
         printf("error:send_num=%ld\r\n", send_num);
 
@@ -516,176 +401,30 @@ static int send_arm_cmd(const arm_control_request_t *req, arm_control_response_t
         }
 
         result = ERR_SEND_CMD_FAIL;
-        goto RET_OUT;
     }
 
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += 5;
-
-    if (sem_timedwait(&cmd->sem, &ts) == -1)
-    {
-        if (errno == ETIMEDOUT)
-        {
-            printf("sem_timedwait timed out\n");
-            result = ERR_RECV_CMD_TIMEOUT;
-        }
-        else
-        {
-            perror("sem_timedwait failed");
-            result = ERR_RECV_CMD_FAILED;
-        }
-        goto RET_OUT;
-    }
-    else
-    {
-        // printf("sem_timedwait succeeded\n");
-        *resp = cmd->resp;
-    }
-
-RET_OUT:
-    destroy_arm_control_cmd(cmd);
     return result;
 }
 
 // get the status of the ARM
-int get_arm_status(int *arm_status)
+static int sent_group_register_request(void)
 {
     int ret = 0;
-    arm_control_request_t req;
-    arm_control_response_t resp;
+    client_register_request_t req;
 
     memset((void *)&req, 0, sizeof(req));
     req.magic = htons(MAGIC_WHOLE);
-    req.command = htons(CMD_GET_ARM_STATUS);
-    req.length = htons(CMD_REQ_DATA_LENGTH);
+    req.command = htons(CLIENT_CMD_REGISTER_GROUP);
+    req.group_id = htons(AGV_CAN_GROUP_ID);
+    req.length = htons(CLIENT_REGISTER_DATA_LENGTH);
+    req.checksum = htons(cal_checksum((uint8 *)&req.command, CLIENT_REGISTER_DATA_LENGTH));
 
-    ret = send_arm_cmd(&req, &resp);
+    ret = send_client_data((const unsigned char *)&req, sizeof(client_register_request_t));
     if (ret != ERR_OK)
     {
         return ret;
-    }
-
-    *arm_status = (int)resp.command_result;
-
-    return ERR_OK;
-}
-
-// get the current position of the joints of the ARM
-int get_joint_pos(joint_pos_t *j_pos)
-{
-    int ret = 0, i = 0;
-    arm_control_request_t req;
-    arm_control_response_t resp;
-
-    memset((void *)&req, 0, sizeof(req));
-    req.magic = htons(MAGIC_WHOLE);
-    req.command = htons(CMD_GET_JOINT_POS);
-    req.length = htons(CMD_REQ_DATA_LENGTH);
-
-    ret = send_arm_cmd(&req, &resp);
-    if (ret != ERR_OK)
-    {
-        return ret;
-    }
-
-    for (i = 0; i < MAX_JOINT_NUM; i++)
-    {
-        j_pos->pos[i] = (double)(((int)resp.joint_pos[i]) * 1.0f / DEG_CONVERSION_PARAM);
     }
 
     return ERR_OK;
 }
 
-// set the target position of the joints of the ARM
-unsigned int set_joint_pos(const joint_pos_t *j_pos, unsigned int execute_time_us)
-{
-    int ret = 0, i = 0;
-    arm_control_request_t req;
-    arm_control_response_t resp;
-
-    memset((void *)&req, 0, sizeof(req));
-    req.magic = htons(MAGIC_WHOLE);
-    req.command = htons(CMD_SET_JOINT_POS);
-    req.length = htons(CMD_REQ_DATA_LENGTH);
-    req.execute_time_us = htonl(execute_time_us);
-
-    for (i = 0; i < MAX_JOINT_NUM; i++)
-    {
-        uint32 deg = (uint32)((int)(j_pos->pos[i] * DEG_CONVERSION_PARAM));
-        req.joint_pos[i] = htonl(deg);
-    }
-
-
-    ret = send_arm_cmd(&req, &resp);
-    if (ret != ERR_OK)
-    {
-        return ret;
-    }
-
-    return resp.action_index;
-}
-
-// get the status of the jonint action
-int get_joint_action_status(unsigned int action_index)
-{
-    int ret = 0;
-    arm_control_request_t req;
-    arm_control_response_t resp;
-
-    memset((void *)&req, 0, sizeof(req));
-    req.magic = htons(MAGIC_WHOLE);
-    req.command = htons(CMD_GET_JOINT_ACTION_STATUS);
-    req.length = htons(CMD_REQ_DATA_LENGTH);
-    req.action_index = htonl(action_index);
-
-    ret = send_arm_cmd(&req, &resp);
-    if (ret != ERR_OK)
-    {
-        return ret;
-    }
-
-    return resp.command_result;
-}
-
-// get the control state of the gripper
-int get_gripper_state()
-{
-    int ret = 0;
-    arm_control_request_t req;
-    arm_control_response_t resp;
-
-    memset((void *)&req, 0, sizeof(req));
-    req.magic = htons(MAGIC_WHOLE);
-    req.command = htons(CMD_GET_GRIPPER_STATE);
-    req.length = htons(CMD_REQ_DATA_LENGTH);
-
-    ret = send_arm_cmd(&req, &resp);
-    if (ret != ERR_OK)
-    {
-        return ret;
-    }
-
-    return resp.gripper_state;
-}
-
-// set the control state of the gripper
-int set_gripper_state(int gripper_state)
-{
-    int ret = 0;
-    arm_control_request_t req;
-    arm_control_response_t resp;
-
-    memset((void *)&req, 0, sizeof(req));
-    req.magic = htons(MAGIC_WHOLE);
-    req.command = htons(CMD_SET_GRIPPER_STATE);
-    req.length = htons(CMD_REQ_DATA_LENGTH);
-    req.gripper_state = htons(gripper_state);
-
-    ret = send_arm_cmd(&req, &resp);
-    if (ret != ERR_OK)
-    {
-        return ret;
-    }
-
-    return resp.command_result;
-}

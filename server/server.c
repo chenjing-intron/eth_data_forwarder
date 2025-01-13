@@ -18,10 +18,12 @@
 #include <unistd.h>
 #include <sched.h>
 #include <arpa/inet.h>
-#include "server.h"
 #include "client_api_packet.h"
 
-#define MAX_TCP_CLIENT_NUM (5)
+#include "server.h"
+
+
+#define MAX_TCP_CLIENT_NUM (10)
 
 static int filed_data_len[FIELD_NUM] =
     {
@@ -36,8 +38,10 @@ typedef struct tcp_client
    int fd;
    int valid;
    int recv_state;
+   uint16_t group_id;
    uint8_t data[MAX_COMMAND_DATA_LEN + 6];
    field_data_t field[FIELD_NUM];
+   struct tcp_client * peer_client;
 } tcp_client_t;
 
 typedef struct tcp_server
@@ -46,8 +50,6 @@ typedef struct tcp_server
    pthread_mutex_t mutex;
    tcp_client_t clients[MAX_TCP_CLIENT_NUM];
 } tcp_server_t;
-
-#define uint16_t unsigned short
 
 static tcp_server_t server;
 
@@ -200,7 +202,9 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
          //printf("field=%d cur_len=%d actual_len=%d\r\n", client_p->recv_state, field_p->cur_len, field_p->actual_len);
 
          field_p->data[field_p->cur_len] = data[i];
+
          field_p->cur_len++;
+
          if (field_p->cur_len == field_p->actual_len)
          {
             int check_result = check_field_data(client_p, client_p->recv_state);
@@ -215,7 +219,6 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
                   if (field_p->actual_len == CMD_REQ_DATA_LENGTH)
                   {
                      arm_control_request_t req;
-                     int j = 0;
                      memset((void *)&req, 0, sizeof(req));
                      memcpy((void *)&req.command, field_p->data, CMD_REQ_DATA_LENGTH);
 
@@ -224,11 +227,6 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
                      req.action_index = ntohl(req.action_index);
                      req.execute_time_us = ntohl(req.execute_time_us);
                      req.gripper_state = ntohs(req.gripper_state);
-
-                     for (j = 0; j < MAX_JOINT_NUM; j++)
-                     {
-                        req.joint_pos[j] = ntohl(req.joint_pos[j]);
-                     }
 
                      //process_client_cmd_req(client_p, &req);
                   }
@@ -483,7 +481,7 @@ int main(int argc, char *argv[])
 
    printf("ethernet data forwarder\n");
 
-   ret = create_tcp_server(7272);
+   ret = create_tcp_server(SERVER_PORT_NUM);
    printf("create_tcp_server ret=%d\r\n", ret);
 
    while (1)
