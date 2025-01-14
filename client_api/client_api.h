@@ -7,10 +7,12 @@
 #define ERR_RECV_CMD_TIMEOUT (-3)
 #define ERR_RECV_CMD_FAILED  (-4)
 
+#define AGV_CAN_GROUP_ID (0xE001)
+
 typedef void (*recv_func_cb_t)(unsigned char * data, int data_len);
 
 //connect the server using ip address
-int connect_server(const char * server_ip, recv_func_cb_t recv_func_cb);
+int connect_server(const char * server_ip, unsigned short  group_id, recv_func_cb_t recv_func_cb);
 
 //disconnect the server
 void disconnect_server(void);

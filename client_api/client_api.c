@@ -28,6 +28,7 @@ typedef struct tcp_client
     int valid;
     int recv_state;
     recv_func_cb_t  recv_func_cb;
+    unsigned short  group_id;
     uint8_t data[MAX_COMMAND_DATA_LEN + 6];
     field_data_t field[FIELD_NUM];
 } tcp_client_t;
@@ -307,7 +308,7 @@ static void *client_receive_func(void *ptr)
 static int sent_group_register_request(void);
 
 // connect the arm using ip address
-int connect_server(const char *server_ip, recv_func_cb_t recv_func_cb)
+int connect_server(const char *server_ip, unsigned short  group_id, recv_func_cb_t recv_func_cb)
 {
     int sock = -1, ret = ERR_OK;
 
@@ -337,6 +338,7 @@ int connect_server(const char *server_ip, recv_func_cb_t recv_func_cb)
 
     client.fd = sock;
     client.recv_func_cb = recv_func_cb;
+    client.group_id = group_id;
 
     pthread_attr_t attr;
     pthread_attr_init(&attr);
@@ -433,7 +435,7 @@ static int sent_group_register_request(void)
     memset((void *)&req, 0, sizeof(req));
     req.magic = htons(MAGIC_WHOLE);
     req.command = htons(CLIENT_CMD_REGISTER_GROUP);
-    req.group_id = htons(AGV_CAN_GROUP_ID);
+    req.group_id = htons(client.group_id);
     req.length = htons(CLIENT_REGISTER_DATA_LENGTH);
     req.checksum = htons(cal_checksum((uint8 *)&req.command, CLIENT_REGISTER_DATA_LENGTH));
 
