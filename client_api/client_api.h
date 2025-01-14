@@ -15,5 +15,7 @@ int connect_server(const char * server_ip, recv_func_cb_t recv_func_cb);
 //disconnect the server
 void disconnect_server(void);
 
+//sent data to peer client
+int transfer_data(const unsigned char * data, int data_len);
 
 #endif

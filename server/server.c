@@ -19,9 +19,8 @@
 #include <sched.h>
 #include <arpa/inet.h>
 #include "client_api_packet.h"
-
+#include <errno.h>
 #include "server.h"
-
 
 #define MAX_TCP_CLIENT_NUM (10)
 
@@ -41,7 +40,7 @@ typedef struct tcp_client
    uint16_t group_id;
    uint8_t data[MAX_COMMAND_DATA_LEN + 6];
    field_data_t field[FIELD_NUM];
-   struct tcp_client * peer_client;
+   struct tcp_client *peer_client;
 } tcp_client_t;
 
 typedef struct tcp_server
@@ -85,7 +84,7 @@ static int check_field_data(tcp_client_t *client_p, int recv_state)
 {
    field_data_t *field_p = &client_p->field[recv_state];
 
-   //printf("check_field_data: recv_state=%d\r\n", recv_state);
+   printf("check_field_data: recv_state=%d\r\n", recv_state);
 
    // check the field value
    switch (recv_state)
@@ -107,7 +106,7 @@ static int check_field_data(tcp_client_t *client_p, int recv_state)
       uint16_t recv_len = *((uint16 *)field_p->data);
       recv_len = ntohs(recv_len);
 
-      //printf("recv_len=%d\r\n", recv_len);
+      // printf("recv_len=%d\r\n", recv_len);
 
       if (recv_len > MAX_COMMAND_DATA_LEN || recv_len == 0)
       {
@@ -140,6 +139,10 @@ static int check_field_data(tcp_client_t *client_p, int recv_state)
          reset_client_rx_state(client_p);
          return 1;
       }
+      else
+      {
+         printf("ok checksum:recv_checksum=%d,cal_checksum=%d\r\n", recv_checksum, cal_checksum);
+      }
 
       break;
    }
@@ -150,7 +153,7 @@ static int check_field_data(tcp_client_t *client_p, int recv_state)
    }
    }
 
-   //printf("check_field_data: recv_state=%d end\r\n", recv_state);
+   printf("check_field_data: recv_state=%d end\r\n", recv_state);
 
    return 0;
 }
@@ -187,11 +190,33 @@ static void print_data(uint8 *data, int data_len)
 }
 #endif
 
+static void notify_response(tcp_client_t *client_p, uint8 *data, int data_len)
+{
+   ssize_t send_num = 0;
+
+   send_num = send(client_p->fd, data, data_len, 0);
+   if (send_num != data_len)
+   {
+      printf("error:send_num=%ld\r\n", send_num);
+
+      if (send_num < 0)
+      {
+         printf("errno=%d,%s\r\n", errno, strerror(errno));
+      }
+   }
+}
+
 static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_len)
 {
    int i = 0;
 
    //print_data(data, data_len);
+
+   if (client_p->group_id != 0 && client_p->peer_client != NULL)
+   {
+      notify_response(client_p->peer_client, data, data_len);
+      return;
+   }
 
    for (i = 0; i < data_len; i++)
    {
@@ -199,7 +224,7 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
       {
          field_data_t *field_p = &client_p->field[client_p->recv_state];
 
-         //printf("field=%d cur_len=%d actual_len=%d\r\n", client_p->recv_state, field_p->cur_len, field_p->actual_len);
+         // printf("field=%d cur_len=%d actual_len=%d\r\n", client_p->recv_state, field_p->cur_len, field_p->actual_len);
 
          field_p->data[field_p->cur_len] = data[i];
 
@@ -215,20 +240,48 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
                if (client_p->recv_state >= RECV_STATE_MAX)
                {
                   // get a command req or resp
+                  // printf("get ok packet\r\n");
+
                   field_p = &client_p->field[RECV_DATA];
-                  if (field_p->actual_len == CMD_REQ_DATA_LENGTH)
+                  if (field_p->actual_len > (int)MSG_FIELD_COMMAND_LENGTH)
                   {
-                     arm_control_request_t req;
-                     memset((void *)&req, 0, sizeof(req));
-                     memcpy((void *)&req.command, field_p->data, CMD_REQ_DATA_LENGTH);
+                     int data_len = field_p->actual_len - MSG_FIELD_COMMAND_LENGTH;
 
-                     req.command = ntohs(req.command);
-                     req.cmd_index = ntohl(req.cmd_index);
-                     req.action_index = ntohl(req.action_index);
-                     req.execute_time_us = ntohl(req.execute_time_us);
-                     req.gripper_state = ntohs(req.gripper_state);
+                     uint16 command = ntohs(*((uint16 *)field_p->data));
 
-                     //process_client_cmd_req(client_p, &req);
+                     if (CLIENT_CMD_REGISTER_GROUP == command)
+                     {
+                        if (data_len >= (int)MSG_FIELD_GROUP_ID_LENGTH)
+                        {
+                           int j = 0;
+                           uint16 group_id = ntohs(*((uint16 *)(field_p->data + MSG_FIELD_COMMAND_LENGTH)));
+                           printf("recv client register:group_id=0x%x\r\n", group_id);
+
+                           client_p->group_id = group_id;
+
+                           for (j = 0; j < MAX_TCP_CLIENT_NUM; j++)
+                           {
+                              if (client_p != &server.clients[j] && server.clients[j].valid && server.clients[j].fd >= 0 && server.clients[j].group_id == group_id && group_id != 0)
+                              {
+                                 client_p->peer_client = &server.clients[j];
+                                 server.clients[j].peer_client = client_p;
+                                 printf("matched client ofr group_id=0x%x\r\n", group_id);
+                                 break;
+                              }
+                           }
+                        }
+                        else
+                        {
+                           printf("error:wrong client register cmd, data_len=%d\r\n", data_len);
+                        }
+                     }
+                     else if (CLIENT_CMD_TRANSFER_DATA == command)
+                     {
+                     }
+                     else
+                     {
+                        printf("error:wrong client cmd, cmd=0x%x\r\n", command);
+                     }
                   }
                   else
                   {
@@ -274,7 +327,7 @@ static OSAL_THREAD_FUNC server_listen_func(void *ptr)
          continue;
       }
 
-      //printf("Connection accepted\n");
+      // printf("Connection accepted\n");
 
       pthread_mutex_lock(&server.mutex);
       for (i = 0; i < MAX_TCP_CLIENT_NUM; i++)
@@ -287,7 +340,7 @@ static OSAL_THREAD_FUNC server_listen_func(void *ptr)
 
             server_p->clients[i].valid = 1;
 
-            //pthread_mutex_unlock(&server.mutex);
+            // pthread_mutex_unlock(&server.mutex);
 
             break;
          }
@@ -361,16 +414,16 @@ static OSAL_THREAD_FUNC server_receive_func(void *ptr)
          {
             if (server_p->clients[i].valid && server_p->clients[i].fd >= 0)
             {
-               //printf("one socket:fd=%d \r\n", server_p->clients[i].fd);
+               // printf("one socket:fd=%d \r\n", server_p->clients[i].fd);
                if (FD_ISSET(server_p->clients[i].fd, &readfds))
                {
                   int recv_number = 0;
                   while (1)
                   {
                      uint8_t buf[1024] = {0};
-                     //printf("before recv \r\n");
+                     // printf("before recv \r\n");
                      int bytes = recv(server_p->clients[i].fd, buf, sizeof(buf), MSG_DONTWAIT);
-                     //printf("recv:bytes=%d\r\n", bytes);
+                     // printf("recv:bytes=%d\r\n", bytes);
 
                      if (bytes > 0)
                      {
@@ -404,15 +457,15 @@ static OSAL_THREAD_FUNC server_receive_func(void *ptr)
 
 int osal_thread_create(void *thandle, int stacksize, void *func, void *param)
 {
-   int                  ret;
-   pthread_attr_t       attr;
-   pthread_t            *threadp;
+   int ret;
+   pthread_attr_t attr;
+   pthread_t *threadp;
 
    threadp = thandle;
    pthread_attr_init(&attr);
    pthread_attr_setstacksize(&attr, stacksize);
    ret = pthread_create(threadp, &attr, func, param);
-   if(ret < 0)
+   if (ret < 0)
    {
       return 0;
    }

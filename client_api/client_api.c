@@ -161,9 +161,9 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
                     {
                         // got a command req or resp
                         field_p = &client_p->field[RECV_DATA];
-                        if (field_p->actual_len > (int)sizeof(uint16))
+                        if (field_p->actual_len > (int)MSG_FIELD_COMMAND_LENGTH)
                         {
-                            int data_len = field_p->actual_len - sizeof(uint16);
+                            int data_len = field_p->actual_len - MSG_FIELD_COMMAND_LENGTH;
                             
                             uint16 command = ntohs(*((uint16*)field_p->data));
 
@@ -385,10 +385,28 @@ static uint16 cal_checksum(uint8 *data, int data_len)
     return cal_checksum;
 }
 
+static void print_data(const unsigned char *data, int data_len)
+{
+   int i = 0;
+
+   printf("---the data is:\r\n");
+   for (i = 0; i < data_len; i++)
+   {
+      printf("0x%x ", data[i]);
+      if (0 == ((i + 1) % 16))
+      {
+         printf("\r\n");
+      }
+   }
+   printf("\r\n");
+}
+
 static int send_client_data(const unsigned char * data, int data_len)
 {
     ssize_t send_num = 0;
     int result = ERR_OK;
+
+    print_data(data, data_len);
 
     send_num = send(client.fd, data, data_len, 0);
     if (send_num != data_len)
@@ -428,3 +446,37 @@ static int sent_group_register_request(void)
     return ERR_OK;
 }
 
+int transfer_data(const unsigned char * data, int data_len)
+{
+    int ret = ERR_OK;
+
+    unsigned char client_data[MAX_COMMAND_DATA_LEN + FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + FIELD_CHECKSUM_LEN];
+    unsigned char * p = client_data;
+    if (data_len > (int)(MAX_COMMAND_DATA_LEN - MSG_FIELD_COMMAND_LENGTH))
+    {
+        return -1;
+    }
+
+    memset((void*)client_data, 0, sizeof(client_data));
+    *((uint16 *)p) = htons(MAGIC_WHOLE);
+    p += sizeof(uint16);
+
+    *((uint16 *)p) = htons(data_len + MSG_FIELD_COMMAND_LENGTH);
+    p += sizeof(uint16);
+
+    *((uint16 *)p) = htons(CLIENT_CMD_TRANSFER_DATA);
+    p += sizeof(uint16);
+
+    memcpy((void*)p, data, data_len);
+    p += data_len;
+
+    *((uint16 *)p) = htons(cal_checksum((uint8 *)&client_data[sizeof(uint16) + sizeof(uint16)], data_len + MSG_FIELD_COMMAND_LENGTH));
+
+    ret = send_client_data((const unsigned char *)client_data, data_len + MSG_FIELD_COMMAND_LENGTH + FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + FIELD_CHECKSUM_LEN);
+    if (ret != ERR_OK)
+    {
+        return ret;
+    }
+
+    return ERR_OK;
+}

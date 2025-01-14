@@ -44,6 +44,14 @@ void client_recv_func(unsigned char * data, int data_len)
    print_data(data, data_len);
 }
 
+static void show_help(void)
+{
+   printf("please input test mode:\r\n");
+   printf("    0: send 0000000\r\n");
+   printf("    1: send 1111111\r\n");
+   printf("    2: send 2222222\r\n");
+}
+
 int main(int argc, char *argv[])
 {
    int ret = 0;
@@ -65,6 +73,48 @@ int main(int argc, char *argv[])
 
    while (1)
    {
+      int ret = 0;
+      int test_mode = 0;
+      int match_num = 0;
+
+      show_help();
+
+      match_num = scanf("%d", &test_mode);
+      if (match_num == 1)
+      {
+         switch (test_mode)
+         {
+            case 0:
+            {
+               const char * send_data = "0000000";
+               ret = transfer_data((const unsigned char *)send_data, strlen(send_data));
+               printf("transfer_data ret=%d\r\n", ret);
+               break;
+            }
+
+            case 1:
+            {
+               const char * send_data = "1111111";
+               ret = transfer_data((const unsigned char *)send_data, strlen(send_data));
+               printf("transfer_data ret=%d\r\n", ret);
+               break;
+            }
+
+            case 2:
+            {
+               const char * send_data = "2222222";
+               ret = transfer_data((const unsigned char *)send_data, strlen(send_data));
+               printf("transfer_data ret=%d\r\n", ret);
+               break;
+            }
+
+            default:
+            {
+               break;
+            }
+         }
+      }
+
       usleep(1000000);
    }
 

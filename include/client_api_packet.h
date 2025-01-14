@@ -9,30 +9,6 @@
 
 #define SERVER_PORT_NUM (7272)
 
-typedef struct __attribute__((packed)) arm_control_request {
-    uint16  magic; 
-    uint16  length;
-    uint16  command;
-    uint32  cmd_index;
-    uint32  action_index;
-    uint32  execute_time_us;
-    uint16  gripper_state;
-    uint16  checksum;  
-} arm_control_request_t;
-
-#define CMD_REQ_DATA_LENGTH (sizeof(arm_control_request_t) - 6)
-
-
-typedef struct __attribute__((packed)) arm_control_response {
-    uint16  magic; 
-    uint16  length;
-    uint16  command;
-    uint16  command_result;
-    uint16  checksum;  
-} arm_control_response_t;
-
-#define CMD_RESP_DATA_LENGTH (sizeof(arm_control_response_t) - 6)
-
 #define AGV_CAN_GROUP_ID (0xE001)
 
 #define CLIENT_CMD_REGISTER_GROUP  (0xA001)
@@ -47,13 +23,8 @@ typedef struct __attribute__((packed)) client_register_request {
 } client_register_request_t;
 
 #define CLIENT_REGISTER_DATA_LENGTH (sizeof(client_register_request_t) - 6)
-
-
-
-typedef struct __attribute__((packed)) client_data {
-    uint16  command;
-    uint8   data[0];
-} client_data_t;
+#define MSG_FIELD_COMMAND_LENGTH (sizeof(uint16))
+#define MSG_FIELD_GROUP_ID_LENGTH (sizeof(uint16))   
 
 
 #define MAGIC1 (0x55)
