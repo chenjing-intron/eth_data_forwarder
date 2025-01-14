@@ -71,13 +71,15 @@ int main(int argc, char *argv[])
       printf("connect server OK!\r\n");
    }
 
+   show_help();
+
    while (1)
    {
       int ret = 0;
       int test_mode = 0;
       int match_num = 0;
 
-      show_help();
+      
 
       match_num = scanf("%d", &test_mode);
       if (match_num == 1)
@@ -115,7 +117,7 @@ int main(int argc, char *argv[])
          }
       }
 
-      usleep(1000000);
+      //usleep(1000000);
    }
 
    printf("End program\n");

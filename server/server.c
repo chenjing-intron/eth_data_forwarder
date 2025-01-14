@@ -84,7 +84,7 @@ static int check_field_data(tcp_client_t *client_p, int recv_state)
 {
    field_data_t *field_p = &client_p->field[recv_state];
 
-   printf("check_field_data: recv_state=%d\r\n", recv_state);
+   //printf("check_field_data: recv_state=%d\r\n", recv_state);
 
    // check the field value
    switch (recv_state)
@@ -141,7 +141,7 @@ static int check_field_data(tcp_client_t *client_p, int recv_state)
       }
       else
       {
-         printf("ok checksum:recv_checksum=%d,cal_checksum=%d\r\n", recv_checksum, cal_checksum);
+         //printf("ok checksum:recv_checksum=%d,cal_checksum=%d\r\n", recv_checksum, cal_checksum);
       }
 
       break;
@@ -153,7 +153,7 @@ static int check_field_data(tcp_client_t *client_p, int recv_state)
    }
    }
 
-   printf("check_field_data: recv_state=%d end\r\n", recv_state);
+   //printf("check_field_data: recv_state=%d end\r\n", recv_state);
 
    return 0;
 }
@@ -224,7 +224,7 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
       {
          field_data_t *field_p = &client_p->field[client_p->recv_state];
 
-         // printf("field=%d cur_len=%d actual_len=%d\r\n", client_p->recv_state, field_p->cur_len, field_p->actual_len);
+          //printf("field=%d cur_len=%d actual_len=%d\r\n", client_p->recv_state, field_p->cur_len, field_p->actual_len);
 
          field_p->data[field_p->cur_len] = data[i];
 
@@ -435,6 +435,14 @@ static OSAL_THREAD_FUNC server_receive_func(void *ptr)
                         if (recv_number == 0)
                         {
                            // client error
+                           if (server_p->clients[i].peer_client != NULL)
+                           {
+                              server_p->clients[i].peer_client->peer_client = NULL;
+                              server_p->clients[i].peer_client = NULL;
+                           }
+
+                           //printf("client err : disconnect\r\n");
+
                            server_p->clients[i].valid = 0;
                            close(server_p->clients[i].fd);
                            server_p->clients[i].fd = -1;
