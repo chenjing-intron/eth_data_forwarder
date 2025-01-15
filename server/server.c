@@ -463,7 +463,7 @@ static OSAL_THREAD_FUNC server_receive_func(void *ptr)
    }
 }
 
-int osal_thread_create(void *thandle, int stacksize, void *func, void *param)
+static int osal_thread_create(void *thandle, int stacksize, void *func, void *param)
 {
    int ret;
    pthread_attr_t attr;
