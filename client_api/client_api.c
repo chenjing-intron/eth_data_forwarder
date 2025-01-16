@@ -387,6 +387,7 @@ static uint16 cal_checksum(uint8 *data, int data_len)
     return cal_checksum;
 }
 
+#ifdef PRINT_DATA
 static void print_data(const unsigned char *data, int data_len)
 {
    int i = 0;
@@ -402,14 +403,16 @@ static void print_data(const unsigned char *data, int data_len)
    }
    printf("\r\n");
 }
+#endif
 
 static int send_client_data(const unsigned char * data, int data_len)
 {
     ssize_t send_num = 0;
     int result = ERR_OK;
 
+#ifdef PRINT_DATA
     print_data(data, data_len);
-
+#endif
     send_num = send(client.fd, data, data_len, 0);
     if (send_num != data_len)
     {

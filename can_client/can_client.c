@@ -63,7 +63,7 @@ void client_recv_func(unsigned char * data, int data_len)
    int ret = 0;
 
    #ifdef PRINT_DATA
-   print_data(data, data_len);
+   //print_data(data, data_len);
    #endif
    if (can_fd < 0)
    {
@@ -114,6 +114,13 @@ static int open_can(void)
       fd = -1;
       return -1;
     }
+    else
+    {
+      printf("can ifindex=%d\r\n", ifr.ifr_ifindex);
+    }
+
+    int canfd_on = 1;
+    setsockopt(fd, SOL_CAN_RAW, CAN_RAW_FD_FRAMES, &canfd_on, sizeof(canfd_on));
     
     memset(&addr, 0, sizeof(addr));
     addr.can_family = AF_CAN;
@@ -125,6 +132,10 @@ static int open_can(void)
       close(fd);
       fd = -1;
       return -1;
+    }
+    else
+    {
+	 printf("can bind ok\r\n");
     }
 
     return fd;
@@ -169,7 +180,10 @@ static OSAL_THREAD_FUNC can_recv_func(void *ptr)
          else
          {
             int ret = transfer_data((const unsigned char *)&recv_frames, sizeof(recv_frames));
-            printf("transfer_data ret=%d\r\n", ret);
+	    if (ret != ERR_OK)
+	    {
+            	printf("transfer_data ret=%d\r\n", ret);
+	    }
          }
       }
    }
