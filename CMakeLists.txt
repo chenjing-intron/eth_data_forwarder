@@ -24,3 +24,8 @@ add_executable(can_client can_client/can_client.c)
 target_include_directories(can_client PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
 target_include_directories(can_client PUBLIC ${CMAKE_CURRENT_LIST_DIR}/client_api)
 target_link_libraries(can_client client_api)
+
+add_executable(uart_client uart_client/uart_client.c)
+target_include_directories(uart_client PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
+target_include_directories(uart_client PUBLIC ${CMAKE_CURRENT_LIST_DIR}/client_api)
+target_link_libraries(uart_client client_api)

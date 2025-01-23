@@ -8,6 +8,7 @@
 #define ERR_RECV_CMD_FAILED  (-4)
 
 #define AGV_CAN_GROUP_ID (0xE001)
+#define AGV_UART_GROUP_ID (0xE002)
 
 typedef void (*recv_func_cb_t)(unsigned char * data, int data_len);
 
