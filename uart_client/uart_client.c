@@ -205,7 +205,7 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-   ret = connect_server("127.0.0.1", AGV_UART_GROUP_ID, (recv_func_cb_t)client_recv_func);
+   ret = connect_server("127.0.0.1", J5_UART_GROUP_ID, (recv_func_cb_t)client_recv_func);
    if (ret != ERR_OK)
    {
       printf("connect server failed, ret=%d\r\n", ret);

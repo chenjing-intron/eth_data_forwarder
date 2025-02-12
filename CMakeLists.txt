@@ -29,3 +29,8 @@ add_executable(uart_client uart_client/uart_client.c)
 target_include_directories(uart_client PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
 target_include_directories(uart_client PUBLIC ${CMAKE_CURRENT_LIST_DIR}/client_api)
 target_link_libraries(uart_client client_api)
+
+add_executable(imu_client imu_client/imu_client.c)
+target_include_directories(imu_client PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
+target_include_directories(imu_client PUBLIC ${CMAKE_CURRENT_LIST_DIR}/client_api)
+target_link_libraries(imu_client client_api)
