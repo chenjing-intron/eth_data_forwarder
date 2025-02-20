@@ -31,6 +31,7 @@
 #define CAN_NAME "can0"
 static int can_fd = -1;
 
+pthread_mutex_t can_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #include <pthread.h>
 
@@ -71,7 +72,9 @@ void client_recv_func(unsigned char * data, int data_len)
    }
    else
    {
+      pthread_mutex_lock(&can_mutex); 
       ret = write(can_fd, data, data_len);
+	  pthread_mutex_unlock(&can_mutex); 
       if (ret != data_len)
       {
          printf("error:send transfer_data data_len=%d,ret=%d\r\n", data_len, ret);
@@ -79,7 +82,7 @@ void client_recv_func(unsigned char * data, int data_len)
    }
 }
 
-static void show_help(void)
+void show_help(void)
 {
    printf("please input test mode:\r\n");
    printf("    0: send 0000000\r\n");
@@ -119,8 +122,10 @@ static int open_can(void)
       printf("can ifindex=%d\r\n", ifr.ifr_ifindex);
     }
 
+    #if 0
     int canfd_on = 1;
     setsockopt(fd, SOL_CAN_RAW, CAN_RAW_FD_FRAMES, &canfd_on, sizeof(canfd_on));
+    #endif
     
     memset(&addr, 0, sizeof(addr));
     addr.can_family = AF_CAN;
@@ -172,19 +177,30 @@ static OSAL_THREAD_FUNC can_recv_func(void *ptr)
       else
       {
          struct can_frame recv_frames;
+		 
+		 pthread_mutex_lock(&can_mutex); 
          int read_len = read(can_fd, &recv_frames, sizeof(recv_frames));
+		 pthread_mutex_unlock(&can_mutex); 
+		 
          if (read_len != sizeof(recv_frames))
          {
             printf("error:can recv len=%d\r\n", read_len);
          }
          else
          {
+            #if 1
             int ret = transfer_data((const unsigned char *)&recv_frames, sizeof(recv_frames));
 	    if (ret != ERR_OK)
 	    {
             	printf("transfer_data ret=%d\r\n", ret);
 	    }
+	    #else
+	    struct timeval tv;
+	    gettimeofday(&tv, NULL);
+	    printf("recv data:len=%d id=0x%x time=%ld.%ld.%ld \r\n", read_len, recv_frames.can_id, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
+	    #endif
          }
+            
       }
    }
 }
@@ -195,6 +211,34 @@ int main(int argc, char *argv[])
 
    (void)argc;
    (void)argv;
+
+#if 1
+
+   //system("echo 1 >/sys/class/net/can0/threaded");
+   
+   // Set the scheduling policy to SCHED_FIFO
+   struct sched_param param;
+   param.sched_priority = 99; // Highest real-time priority
+
+   // Set the scheduling policy and priority
+   if (sched_setscheduler(0, SCHED_FIFO, &param) == -1)
+   {
+      //system("echo 950000 > /sys/fs/cgroup/cpu/user.slice/cpu.rt_runtime_us");
+
+      if (sched_setscheduler(0, SCHED_FIFO, &param) == -1)
+      {
+      	perror("sched_setscheduler");
+      	exit(EXIT_FAILURE);
+      }
+   }
+
+   // Print the new scheduling policy and priority
+   int policy = sched_getscheduler(0);
+   int priority = sched_getparam(0, &param);
+
+   printf("New scheduling policy: %d\n", policy);
+   printf("New priority: %d,%d\n", param.sched_priority, priority);
+#endif   
 
    printf("can client\r\n");
 
@@ -217,10 +261,11 @@ int main(int argc, char *argv[])
 
    osal_thread_create(&can_thread_recv, 128000, &can_recv_func, NULL);
 
-   show_help();
+   //show_help();
 
    while (1)
    {
+      #if 0
       int ret = 0;
       int test_mode = 0;
       int match_num = 0;
@@ -260,8 +305,9 @@ int main(int argc, char *argv[])
             }
          }
       }
+      #endif
 
-      //usleep(1000000);
+      usleep(10000000);
    }
 
    printf("End program\n");
