@@ -21,6 +21,7 @@
 #include "client_api_packet.h"
 #include <errno.h>
 #include "server.h"
+#include <sys/resource.h>
 
 #define MAX_TCP_CLIENT_NUM (10)
 
@@ -38,7 +39,7 @@ typedef struct tcp_client
    int valid;
    int recv_state;
    uint16_t group_id;
-   uint8_t data[MAX_COMMAND_DATA_LEN + 6];
+   uint8_t data[MAX_COMMAND_DATA_LEN + FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + FIELD_CHECKSUM_LEN];
    field_data_t field[FIELD_NUM];
    struct tcp_client *peer_client;
 } tcp_client_t;
@@ -55,10 +56,26 @@ static tcp_server_t server;
 static OSAL_THREAD_HANDLE tcp_thread_listen;
 static OSAL_THREAD_HANDLE tcp_receive_listen;
 
+void enable_core_dumps() {
+    struct rlimit core_limit;
+
+    // 获取当前限制
+    getrlimit(RLIMIT_CORE, &core_limit);
+
+    // 设置为不限制
+    core_limit.rlim_cur = core_limit.rlim_max;
+    setrlimit(RLIMIT_CORE, &core_limit);
+
+    system("mkdir -p /userdata/coredump");
+    system("echo \"/userdata/coredump/core.%e.%p.%t\" > /proc/sys/kernel/core_pattern");
+
+    printf("Core dump size limit set to %ld\n", core_limit.rlim_cur);
+}
+
 static void init_client_rx_field(tcp_client_t *client_p)
 {
    int i = 0, offset = 0;
-   for (i = 0; i < RECV_STATE_MAX; i++)
+   for (i = 0; i < FIELD_NUM; i++)
    {
       client_p->field[i].data = client_p->data + offset;
       offset += filed_data_len[i];
@@ -72,7 +89,7 @@ static void init_client_rx_field(tcp_client_t *client_p)
 static void reset_client_rx_state(tcp_client_t *client_p)
 {
    int i = 0;
-   for (i = 0; i < RECV_STATE_MAX; i++)
+   for (i = 0; i < FIELD_NUM; i++)
    {
       client_p->field[i].cur_len = 0;
    }
@@ -230,7 +247,7 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
 
          field_p->cur_len++;
 
-         if (field_p->cur_len == field_p->actual_len)
+         if (field_p->cur_len >= field_p->actual_len)
          {
             int check_result = check_field_data(client_p, client_p->recv_state);
 
@@ -337,6 +354,10 @@ static OSAL_THREAD_FUNC server_listen_func(void *ptr)
             server_p->clients[i].fd = new_socket;
 
             init_client_rx_field(&server_p->clients[i]);
+
+            server_p->clients[i].group_id = 0;
+            server_p->clients[i].peer_client = NULL;
+            server_p->clients[i].recv_state = RECV_MAGIC;
 
             server_p->clients[i].valid = 1;
 
@@ -539,6 +560,33 @@ int main(int argc, char *argv[])
 
    (void)argc;
    (void)argv;
+
+   enable_core_dumps();
+
+   #if 1
+   // Set the scheduling policy to SCHED_FIFO
+   struct sched_param param;
+   param.sched_priority = 99; // Highest real-time priority
+
+   // Set the scheduling policy and priority
+   if (sched_setscheduler(0, SCHED_FIFO, &param) == -1)
+   {
+      system("echo 950000 > /sys/fs/cgroup/cpu/user.slice/cpu.rt_runtime_us");
+
+      if (sched_setscheduler(0, SCHED_FIFO, &param) == -1)
+      {
+      	perror("sched_setscheduler");
+      	exit(EXIT_FAILURE);
+      }
+   }
+
+   // Print the new scheduling policy and priority
+   int policy = sched_getscheduler(0);
+   int priority = sched_getparam(0, &param);
+
+   printf("New scheduling policy: %d\n", policy);
+   printf("New priority: %d,%d\n", param.sched_priority, priority);
+#endif 
 
    printf("ethernet data forwarder\n");
 

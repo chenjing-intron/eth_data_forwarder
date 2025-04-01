@@ -48,7 +48,7 @@ typedef struct __attribute__((packed)) client_register_request {
 #define FIELD_MAGIC_LEN       (2)
 #define FIELD_LENGTH_LEN      (2)
 #define FIELD_CHECKSUM_LEN    (2)
-#define MAX_COMMAND_DATA_LEN  (120)
+#define MAX_COMMAND_DATA_LEN  (200)
 
 typedef struct field_data
 {
