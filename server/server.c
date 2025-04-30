@@ -120,8 +120,8 @@ static int check_field_data(tcp_client_t *client_p, int recv_state)
 
    case RECV_LEN:
    {
-      uint16_t recv_len = *((uint16 *)field_p->data);
-      recv_len = ntohs(recv_len);
+      uint32 recv_len = *((uint32 *)field_p->data);
+      recv_len = ntohl(recv_len);
 
       // printf("recv_len=%d\r\n", recv_len);
 
@@ -142,10 +142,17 @@ static int check_field_data(tcp_client_t *client_p, int recv_state)
    case RECV_CHECKSUM:
    {
       int i = 0;
+      int check_data_len = MAX_CHECK_DATA_LEN + MSG_FIELD_COMMAND_LENGTH;
       uint16_t cal_checksum = 0;
       uint16_t recv_checksum = *((uint16 *)field_p->data);
       recv_checksum = ntohs(recv_checksum);
-      for (i = 0; i < client_p->field[FIELD_DATA].actual_len; i++)
+
+      if (client_p->field[FIELD_DATA].actual_len < check_data_len)
+      {
+         check_data_len = client_p->field[FIELD_DATA].actual_len;
+      }
+
+      for (i = 0; i < check_data_len; i++)
       {
          cal_checksum += client_p->field[FIELD_DATA].data[i];
       }
@@ -214,12 +221,16 @@ static void notify_response(tcp_client_t *client_p, uint8 *data, int data_len)
    send_num = send(client_p->fd, data, data_len, 0);
    if (send_num != data_len)
    {
-      printf("error:send_num=%ld\r\n", send_num);
+      printf("server error:notify_response send_num=%ld, data_len=%d\r\n", send_num, data_len);
 
       if (send_num < 0)
       {
-         printf("errno=%d,%s\r\n", errno, strerror(errno));
+         printf("server errno=%d,%s\r\n", errno, strerror(errno));
       }
+   }
+   else
+   {
+      //printf("notyfy_response:%d bytes ok\r\n", data_len);
    }
 }
 
@@ -235,13 +246,18 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
       return;
    }
 
+   if (client_p->group_id != 0)
+   {
+      return;
+   }
+
    for (i = 0; i < data_len; i++)
    {
       if (client_p->recv_state < RECV_STATE_MAX)
       {
          field_data_t *field_p = &client_p->field[client_p->recv_state];
 
-          //printf("field=%d cur_len=%d actual_len=%d\r\n", client_p->recv_state, field_p->cur_len, field_p->actual_len);
+         //printf("field=%d cur_len=%d actual_len=%d\r\n", client_p->recv_state, field_p->cur_len, field_p->actual_len);
 
          field_p->data[field_p->cur_len] = data[i];
 
@@ -257,7 +273,7 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
                if (client_p->recv_state >= RECV_STATE_MAX)
                {
                   // get a command req or resp
-                  // printf("get ok packet\r\n");
+                   //printf("get ok packet\r\n");
 
                   field_p = &client_p->field[RECV_DATA];
                   if (field_p->actual_len > (int)MSG_FIELD_COMMAND_LENGTH)
@@ -344,6 +360,9 @@ static OSAL_THREAD_FUNC server_listen_func(void *ptr)
          continue;
       }
 
+      int recv_buf_size = 12 * 1024 * 1024;
+      setsockopt(new_socket, SOL_SOCKET, SO_RCVBUF, &recv_buf_size, sizeof(recv_buf_size));
+
       // printf("Connection accepted\n");
 
       pthread_mutex_lock(&server.mutex);
@@ -382,7 +401,11 @@ static OSAL_THREAD_FUNC server_receive_func(void *ptr)
    struct timeval timeout;
    int maxfd = -1, i = 0;
 
-   if (!server_p)
+   uint8_t * buf = NULL;
+   #define MAX_BUF_LEN (1*1024*1024)
+   buf = (uint8_t*)malloc(MAX_BUF_LEN);
+
+   if (! buf || !server_p)
    {
       printf("invalid thread param\r\n");
       return;
@@ -422,6 +445,7 @@ static OSAL_THREAD_FUNC server_receive_func(void *ptr)
       if (ret == -1)
       {
          // 错误处理
+         printf("select ret < 0\r\n");
       }
       else if (ret == 0)
       {
@@ -429,6 +453,8 @@ static OSAL_THREAD_FUNC server_receive_func(void *ptr)
       }
       else
       {
+         struct timeval tv;
+
          pthread_mutex_lock(&server.mutex);
 
          for (i = 0; i < MAX_TCP_CLIENT_NUM; i++)
@@ -441,37 +467,68 @@ static OSAL_THREAD_FUNC server_receive_func(void *ptr)
                   int recv_number = 0;
                   while (1)
                   {
-                     uint8_t buf[1024] = {0};
+                     
                      // printf("before recv \r\n");
-                     int bytes = recv(server_p->clients[i].fd, buf, sizeof(buf), MSG_DONTWAIT);
-                     // printf("recv:bytes=%d\r\n", bytes);
+                     int bytes = recv(server_p->clients[i].fd, buf, MAX_BUF_LEN, MSG_DONTWAIT);
+                     
+				         gettimeofday(&tv, NULL);
+                     //printf("recv:bytes=%d time=%ld.%ld.%ld\r\n", bytes, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
 
                      if (bytes > 0)
                      {
                         process_client_data(&server_p->clients[i], buf, bytes);
                         recv_number += bytes;
+
+                        //gettimeofday(&tv, NULL);
+                        //printf("process:bytes=%d time=%ld.%ld.%ld\r\n", bytes, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
                      }
                      else
                      {
-                        if (recv_number == 0)
+                        if (bytes < 0)
                         {
-                           // client error
-                           if (server_p->clients[i].peer_client != NULL)
+                           if (recv_number == 0)
                            {
-                              server_p->clients[i].peer_client->peer_client = NULL;
-                              server_p->clients[i].peer_client = NULL;
+                              // client error
+                              if (server_p->clients[i].peer_client != NULL)
+                              {
+                                 server_p->clients[i].peer_client->peer_client = NULL;
+                                 server_p->clients[i].peer_client = NULL;
+                              }
+
+                              printf("client err(bytes < 0) : disconnect from group:0x%x, recv_number=%d\r\n", server_p->clients[i].group_id, recv_number);
+
+                              server_p->clients[i].valid = 0;
+                              close(server_p->clients[i].fd);
+                              server_p->clients[i].fd = -1;
                            }
-
-                           //printf("client err : disconnect\r\n");
-
-                           server_p->clients[i].valid = 0;
-                           close(server_p->clients[i].fd);
-                           server_p->clients[i].fd = -1;
+                           
                            break;
                         }
                         else
                         {
-                           break;
+                           if (recv_number == 0)
+                           {
+                              // client error
+                              if (server_p->clients[i].peer_client != NULL)
+                              {
+                                 server_p->clients[i].peer_client->peer_client = NULL;
+                                 server_p->clients[i].peer_client = NULL;
+                              }
+
+                              printf("client err() : disconnect from group:0x%x\r\n", server_p->clients[i].group_id);
+
+                              server_p->clients[i].valid = 0;
+                              close(server_p->clients[i].fd);
+                              server_p->clients[i].fd = -1;
+                              break;
+                           }
+
+                           #if 1
+                           else
+                           {
+                              break;
+                           }
+                           #endif
                         }
                      }
                   }

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.0.2)
 project(eth_data_forwarder)
 
 set(OS "linux")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Werror")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -Wall -Wextra -Werror")
 set(OS_LIBS pthread rt)
 
 

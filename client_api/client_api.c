@@ -13,6 +13,7 @@
 #include <errno.h>
 #include "client_api_packet.h"
 #include "client_api.h"
+#include <sys/uio.h>
 
 static int filed_data_len[FIELD_NUM] =
     {
@@ -22,6 +23,32 @@ static int filed_data_len[FIELD_NUM] =
         FIELD_CHECKSUM_LEN,
 };
 
+#if 0
+// 数据包结构
+typedef struct {
+    void *data;     // 数据指针
+    size_t size;    // 数据长度
+} DataPacket;
+
+// 双向链表节点
+typedef struct QueueNode {
+    DataPacket packet;
+    struct QueueNode *prev;
+    struct QueueNode *next;
+} QueueNode;
+
+// 线程安全队列
+typedef struct {
+    QueueNode *head;            // 队列头节点
+    QueueNode *tail;            // 队列尾节点
+    pthread_mutex_t mutex;       // 互斥锁
+    sem_t sem;                  // 信号量
+    int count;
+    int max_count;
+    volatile int is_running;    // 队列运行标志
+} ThreadSafeQueue;
+#endif
+
 typedef struct tcp_client
 {
     int fd;
@@ -29,8 +56,10 @@ typedef struct tcp_client
     int recv_state;
     recv_func_cb_t  recv_func_cb;
     unsigned short  group_id;
-    uint8_t data[MAX_COMMAND_DATA_LEN + 6];
+    uint8_t data[MAX_COMMAND_DATA_LEN + FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + FIELD_CHECKSUM_LEN];
     field_data_t field[FIELD_NUM];
+
+    //ThreadSafeQueue *queue;     // 发送队列
 } tcp_client_t;
 
 #define uint16_t unsigned short
@@ -39,6 +68,103 @@ static tcp_client_t client;
 static struct sockaddr_in serv_addr;
 
 static pthread_t tcp_receive_listen;
+
+#if 0
+static ThreadSafeQueue queue;
+static pthread_t tcp_send_thread;
+
+// 初始化队列
+void queue_init(ThreadSafeQueue *queue) {
+    queue->head = queue->tail = NULL;
+    pthread_mutex_init(&queue->mutex, NULL);
+    sem_init(&queue->sem, 0, 0);
+    
+    queue->count = 0;
+    queue->max_count = 0;
+
+    queue->is_running = 1;
+}
+
+// 销毁队列并释放资源
+void queue_destroy(ThreadSafeQueue *queue) {
+    pthread_mutex_lock(&queue->mutex);
+    queue->is_running = 0;  // 停止队列运行
+
+    // 释放所有未处理的数据包
+    QueueNode *current = queue->head;
+    while (current != NULL) {
+        QueueNode *next = current->next;
+        free(current->packet.data);
+        free(current);
+        current = next;
+    }
+    pthread_mutex_unlock(&queue->mutex);
+
+    pthread_mutex_destroy(&queue->mutex);
+    sem_destroy(&queue->sem);
+}
+
+// 向队列添加数据包（线程安全）
+void enqueue(ThreadSafeQueue *queue, const void *data, size_t size) {
+    // 创建新节点
+    QueueNode *node = (QueueNode*)malloc(sizeof(QueueNode));
+    node->packet.data = malloc(size);
+    memcpy(node->packet.data, data, size);
+    node->packet.size = size;
+    node->prev = node->next = NULL;
+
+    // 加锁操作队列
+    pthread_mutex_lock(&queue->mutex);
+    if (queue->tail == NULL) {
+        queue->head = queue->tail = node;
+    } else {
+        node->prev = queue->tail;
+        queue->tail->next = node;
+        queue->tail = node;
+    }
+
+    queue->count++;
+    if (queue->count > queue->max_count)
+    {
+        queue->max_count = queue->count;
+        printf("max_count=%d\r\n", queue->max_count);
+    }
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    // 通知发送线程有新数据
+    sem_post(&queue->sem);
+}
+
+// 从队列取出数据包（线程安全）
+DataPacket dequeue(ThreadSafeQueue *queue) {
+    sem_wait(&queue->sem);  // 等待信号量
+
+    pthread_mutex_lock(&queue->mutex);
+    if (!queue->is_running || queue->head == NULL) {
+        pthread_mutex_unlock(&queue->mutex);
+        return (DataPacket){NULL, 0};
+    }
+
+    // 取出头节点
+    QueueNode *node = queue->head;
+    if (queue->head == queue->tail) {
+        queue->head = queue->tail = NULL;
+    } else {
+        queue->head = node->next;
+        queue->head->prev = NULL;
+    }
+
+    queue->count--;
+    printf("dequeue:count=%d\r\n", queue->count);
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    DataPacket packet = node->packet;
+    free(node);  // 释放节点内存（数据内存由发送线程释放）
+    return packet;
+}
+#endif    
 
 static void notify_response(uint8 * data, int data_len)
 {
@@ -94,8 +220,8 @@ static int check_field_data(tcp_client_t *client_p, int recv_state)
 
     case RECV_LEN:
     {
-        uint16_t recv_len = *((uint16_t *)field_p->data);
-        recv_len = ntohs(recv_len);
+        uint32 recv_len = *((uint32 *)field_p->data);
+        recv_len = ntohl(recv_len);
 
         // printf("recv_len=%d\r\n", recv_len);
 
@@ -114,10 +240,17 @@ static int check_field_data(tcp_client_t *client_p, int recv_state)
     case RECV_CHECKSUM:
     {
         int i = 0;
+        int check_data_len = MAX_CHECK_DATA_LEN + MSG_FIELD_COMMAND_LENGTH;
         uint16_t cal_checksum = 0;
         uint16_t recv_checksum = *((uint16_t *)field_p->data);
         recv_checksum = ntohs(recv_checksum);
-        for (i = 0; i < client_p->field[FIELD_DATA].actual_len; i++)
+
+        if (client_p->field[FIELD_DATA].actual_len < check_data_len)
+        {
+            check_data_len = client_p->field[FIELD_DATA].actual_len;
+        }
+
+        for (i = 0; i < check_data_len; i++)
         {
             cal_checksum += client_p->field[FIELD_DATA].data[i];
         }
@@ -199,6 +332,8 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
     }
 }
 
+static int sent_group_register_request(void);
+
 static void client_reconnect_server(void)
 {
     int sock = -1;
@@ -210,11 +345,17 @@ static void client_reconnect_server(void)
 
     if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
     {
-        // printf("\nConnection Failed \n");
+        printf("\nConnection server Failed \n");
         goto err_out;
     }
 
     client.fd = sock;
+
+    int ret = sent_group_register_request();
+    if (ret != ERR_OK)
+    {
+        printf("sent group_register_request fialed,ret=%d\r\n", ret);
+    }
 
     return;
 
@@ -224,6 +365,36 @@ err_out:
 
     return;
 }
+
+#if 0
+static void *client_send_func(void *ptr)
+{
+    tcp_client_t *client_p = (tcp_client_t *)ptr;
+    ThreadSafeQueue *queue = client_p->queue;
+
+    while (queue->is_running) {
+        DataPacket packet = dequeue(queue);
+        if (packet.data == NULL) continue;
+
+        // 完整发送数据（处理部分发送的情况）
+        size_t total_sent = 0;
+        while (total_sent < packet.size) {
+            ssize_t sent = send(client_p->fd, 
+                              (char*)packet.data + total_sent, 
+                              packet.size - total_sent, 
+                              0);
+            if (sent <= 0) {
+                perror("send failed");
+                break;
+            }
+            total_sent += sent;
+        }
+
+        free(packet.data);  // 释放数据内存
+    }
+    return NULL;
+}
+#endif    
 
 static void *client_receive_func(void *ptr)
 {
@@ -250,6 +421,7 @@ static void *client_receive_func(void *ptr)
         {
             client_reconnect_server();
             usleep(2000000);
+            printf("---reconnect server---\r\n");
             continue;
         }
 
@@ -260,10 +432,12 @@ static void *client_receive_func(void *ptr)
         if (ret == -1)
         {
             // 错误处理
+            printf("select ret < 0\r\n");
         }
         else if (ret == 0)
         {
             // 超时处理
+            //printf("select ret == 0\r\n");
         }
         else
         {
@@ -285,17 +459,36 @@ static void *client_receive_func(void *ptr)
                     }
                     else
                     {
-                        if (recv_number == 0)
+                        if (bytes < 0)
                         {
-                            // client error
-                            close(client_p->fd);
-                            client_p->fd = -1;
+                            if (recv_number == 0)
+                            {
+                                // client error
+                                printf("lib(bytes < 0):client error \r\n");
+                                //close(client_p->fd);
+                                //client_p->fd = -1;
+                            }
+                            
                             break;
                         }
                         else
                         {
-                            break;
+                            if (recv_number == 0)
+                            {
+                                // client error
+                                printf("lib(recv_number == 0):client error \r\n");
+                                close(client_p->fd);
+                                client_p->fd = -1;
+                                break;
+                            }
+                            #if 1
+                            else
+                            {
+                                break;
+                            }
+                            #endif
                         }
+                        
                     }
                 }
             }
@@ -336,6 +529,14 @@ int connect_server(const char *server_ip, unsigned short  group_id, recv_func_cb
         goto err_out;
     }
 
+    //int send_buf_size = 9 * 1024 * 1024;
+    //setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &send_buf_size, sizeof(send_buf_size));
+
+    #if 0
+    queue_init(&queue);
+    client.queue = &queue;
+    #endif
+
     client.fd = sock;
     client.recv_func_cb = recv_func_cb;
     client.group_id = group_id;
@@ -350,6 +551,15 @@ int connect_server(const char *server_ip, unsigned short  group_id, recv_func_cb
         pthread_attr_destroy(&attr); 
         goto err_out;
     }
+
+    #if 0
+    if (pthread_create(&tcp_send_thread, &attr, client_send_func, &client) != 0)
+    {
+        perror("pthread_create");
+        pthread_attr_destroy(&attr); 
+        goto err_out;
+    }
+    #endif
 
     pthread_attr_destroy(&attr); 
 
@@ -409,22 +619,34 @@ static int send_client_data(const unsigned char * data, int data_len)
 {
     ssize_t send_num = 0;
     int result = ERR_OK;
+    struct timeval tv;
+	gettimeofday(&tv, NULL);
 
 #ifdef PRINT_DATA
     print_data(data, data_len);
 #endif
+    if (client.fd < 0)
+    {
+        return ERR_SEND_CMD_FAIL;
+    }
+
+    printf("---111 send data_len%d, time=%ld.%ld.%ld \r\n", data_len, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
+
     send_num = send(client.fd, data, data_len, 0);
     if (send_num != data_len)
     {
-        printf("error:send_num=%ld\r\n", send_num);
+        printf("client_api error:send_num=%ld\r\n", send_num);
 
         if (send_num < 0)
         {
-            printf("errno=%d,%s\r\n", errno, strerror(errno));
+            printf("client errno=%d,%s\r\n", errno, strerror(errno));
         }
 
         result = ERR_SEND_CMD_FAIL;
     }
+
+    gettimeofday(&tv, NULL);
+    printf("---222 send data_len%d, time=%ld.%ld.%ld \r\n", data_len, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
 
     return result;
 }
@@ -439,7 +661,7 @@ static int sent_group_register_request(void)
     req.magic = htons(MAGIC_WHOLE);
     req.command = htons(CLIENT_CMD_REGISTER_GROUP);
     req.group_id = htons(client.group_id);
-    req.length = htons(CLIENT_REGISTER_DATA_LENGTH);
+    req.length = htonl(CLIENT_REGISTER_DATA_LENGTH);
     req.checksum = htons(cal_checksum((uint8 *)&req.command, CLIENT_REGISTER_DATA_LENGTH));
 
     ret = send_client_data((const unsigned char *)&req, sizeof(client_register_request_t));
@@ -453,35 +675,115 @@ static int sent_group_register_request(void)
 
 int transfer_data(const unsigned char * data, int data_len)
 {
-    int ret = ERR_OK;
+    //int ret = ERR_OK;
+    unsigned char * p = NULL;
+    int check_data_len = MAX_CHECK_DATA_LEN;
 
-    unsigned char client_data[MAX_COMMAND_DATA_LEN + FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + FIELD_CHECKSUM_LEN];
-    unsigned char * p = client_data;
+    //struct timeval tv;
+	//gettimeofday(&tv, NULL);
+    //printf("   ### 111 send data_len%d, time=%ld.%ld.%ld \r\n", data_len, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
+
+    unsigned char header[FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + MSG_FIELD_COMMAND_LENGTH] = {0x00};  // 包头模板
+    unsigned char footer[FIELD_CHECKSUM_LEN] = {0x00, 0x00};  // 包尾模板
+
+    struct iovec iov[3];
+    iov[0].iov_base = header;
+    iov[0].iov_len = sizeof(header);
+    iov[1].iov_base = (void*)data;
+    iov[1].iov_len = data_len;
+    iov[2].iov_base = footer;
+    iov[2].iov_len = sizeof(footer);
+
+    p = header;
+
+    //memset((void*)client_data_ptr, 0, MAX_COMMAND_DATA_LEN + FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + FIELD_CHECKSUM_LEN);
+    *((uint16 *)p) = htons(MAGIC_WHOLE);
+    p += sizeof(uint16);
+
+    *((uint32 *)p) = htonl(data_len + MSG_FIELD_COMMAND_LENGTH);
+    p += sizeof(uint32);
+
+    *((uint16 *)p) = htons(CLIENT_CMD_TRANSFER_DATA);
+    p += sizeof(uint16);
+
+    p = footer;
+
+    if (data_len < check_data_len)
+    {
+        check_data_len = data_len;
+    }
+
+    *((uint16 *)p) = htons(cal_checksum((uint8 *)data, check_data_len) + cal_checksum((uint8 *)&header[FIELD_MAGIC_LEN + FIELD_LENGTH_LEN], MSG_FIELD_COMMAND_LENGTH));
+
+    //gettimeofday(&tv, NULL);
+    //printf("   ### 222 send data_len%d, time=%ld.%ld.%ld \r\n", data_len, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
+
+    ssize_t bytes_sent = writev(client.fd, iov, 3);
+    if (bytes_sent < 0) {
+        perror("writev failed");
+    }
+
+    //gettimeofday(&tv, NULL);
+    //printf("   ###  333 send data_len%d, time=%ld.%ld.%ld \r\n", data_len, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
+
+
+    #if 0
+    //unsigned char * client_data_ptr = NULL;
+    static unsigned char  client_data_ptr[MAX_COMMAND_DATA_LEN + FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + FIELD_CHECKSUM_LEN];
+    
     if (data_len > (int)(MAX_COMMAND_DATA_LEN - MSG_FIELD_COMMAND_LENGTH))
     {
         return -1;
     }
 
-    memset((void*)client_data, 0, sizeof(client_data));
+    #if 0
+    client_data_ptr = (unsigned char *)malloc(MAX_COMMAND_DATA_LEN + FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + FIELD_CHECKSUM_LEN);
+    if (client_data_ptr == NULL)
+    {
+        printf("malloc failed\r\n");
+        return -1;
+    }
+    #endif
+
+    p = client_data_ptr;
+
+    //memset((void*)client_data_ptr, 0, MAX_COMMAND_DATA_LEN + FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + FIELD_CHECKSUM_LEN);
     *((uint16 *)p) = htons(MAGIC_WHOLE);
     p += sizeof(uint16);
 
-    *((uint16 *)p) = htons(data_len + MSG_FIELD_COMMAND_LENGTH);
-    p += sizeof(uint16);
+    *((uint32 *)p) = htonl(data_len + MSG_FIELD_COMMAND_LENGTH);
+    p += sizeof(uint32);
 
     *((uint16 *)p) = htons(CLIENT_CMD_TRANSFER_DATA);
     p += sizeof(uint16);
 
+    gettimeofday(&tv, NULL);
+    printf("   ### aaa send data_len%d, time=%ld.%ld.%ld \r\n", data_len, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
+
     memcpy((void*)p, data, data_len);
     p += data_len;
 
-    *((uint16 *)p) = htons(cal_checksum((uint8 *)&client_data[sizeof(uint16) + sizeof(uint16)], data_len + MSG_FIELD_COMMAND_LENGTH));
+    *((uint16 *)p) = htons(cal_checksum((uint8 *)&client_data_ptr[sizeof(uint16) + sizeof(uint32)], data_len + MSG_FIELD_COMMAND_LENGTH));
 
-    ret = send_client_data((const unsigned char *)client_data, data_len + MSG_FIELD_COMMAND_LENGTH + FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + FIELD_CHECKSUM_LEN);
+    //enqueue(client.queue, client_data_ptr, data_len + MSG_FIELD_COMMAND_LENGTH + FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + FIELD_CHECKSUM_LEN);
+
+    gettimeofday(&tv, NULL);
+    printf("   ### 222 send data_len%d, time=%ld.%ld.%ld \r\n", data_len, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
+
+    ret = send_client_data((const unsigned char *)client_data_ptr, data_len + MSG_FIELD_COMMAND_LENGTH + FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + FIELD_CHECKSUM_LEN);
+
+    gettimeofday(&tv, NULL);
+    printf("   ### 333 send data_len%d, time=%ld.%ld.%ld \r\n", data_len, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
+
+    //free(client_data_ptr);
+    
+    #if 1
     if (ret != ERR_OK)
     {
         return ret;
     }
+    #endif
+    #endif
 
     return ERR_OK;
 }

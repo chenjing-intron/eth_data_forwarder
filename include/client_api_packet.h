@@ -9,20 +9,20 @@
 
 #define SERVER_PORT_NUM (7272)
 
-
+#define MAX_CHECK_DATA_LEN (100)
 
 #define CLIENT_CMD_REGISTER_GROUP  (0xA001)
 #define CLIENT_CMD_TRANSFER_DATA   (0xA002)
 
 typedef struct __attribute__((packed)) client_register_request {
     uint16  magic; 
-    uint16  length;
+    uint32  length;
     uint16  command;
     uint16  group_id;
     uint16  checksum;  
 } client_register_request_t;
 
-#define CLIENT_REGISTER_DATA_LENGTH (sizeof(client_register_request_t) - 6)
+#define CLIENT_REGISTER_DATA_LENGTH (sizeof(client_register_request_t) - 8)
 #define MSG_FIELD_COMMAND_LENGTH (sizeof(uint16))
 #define MSG_FIELD_GROUP_ID_LENGTH (sizeof(uint16))   
 
@@ -46,9 +46,9 @@ typedef struct __attribute__((packed)) client_register_request {
 #define FIELD_NUM (4)
 
 #define FIELD_MAGIC_LEN       (2)
-#define FIELD_LENGTH_LEN      (2)
+#define FIELD_LENGTH_LEN      (4)
 #define FIELD_CHECKSUM_LEN    (2)
-#define MAX_COMMAND_DATA_LEN  (200)
+#define MAX_COMMAND_DATA_LEN  (5242880)
 
 typedef struct field_data
 {

@@ -11,6 +11,8 @@
 #define J5_UART_GROUP_ID (0xE002)
 #define J5_IMU_GROUP_ID (0xE003)
 
+#define J5_IMAGE_GROUP_ID (0xE010)
+
 typedef void (*recv_func_cb_t)(unsigned char * data, int data_len);
 
 //connect the server using ip address
