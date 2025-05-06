@@ -37,6 +37,7 @@ typedef struct tcp_client
 {
    int fd;
    int valid;
+   int first_packet;
    int recv_state;
    uint16_t group_id;
    uint8_t data[MAX_COMMAND_DATA_LEN + FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + FIELD_CHECKSUM_LEN];
@@ -214,7 +215,7 @@ static void print_data(uint8 *data, int data_len)
 }
 #endif
 
-static void notify_response(tcp_client_t *client_p, uint8 *data, int data_len)
+static int notify_response(tcp_client_t *client_p, uint8 *data, int data_len)
 {
    ssize_t send_num = 0;
 
@@ -227,12 +228,34 @@ static void notify_response(tcp_client_t *client_p, uint8 *data, int data_len)
       {
          printf("server errno=%d,%s\r\n", errno, strerror(errno));
       }
+
+      send_num = -1;
    }
    else
    {
       //printf("notyfy_response:%d bytes ok\r\n", data_len);
    }
+
+   return send_num;
 }
+
+#if 0
+static void print_data(unsigned char *data, int data_len)
+{
+   int i = 0;
+
+   printf("---the data is:\r\n");
+   for (i = 0; i < data_len; i++)
+   {
+      printf("0x%x ", data[i]);
+      if (0 == ((i + 1) % 16))
+      {
+         printf("\r\n");
+      }
+   }
+   printf("\r\n");
+}
+#endif   
 
 static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_len)
 {
@@ -242,7 +265,29 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
 
    if (client_p->group_id != 0 && client_p->peer_client != NULL)
    {
-      notify_response(client_p->peer_client, data, data_len);
+      #if 1
+      int notify_data_len = notify_response(client_p->peer_client, data, data_len);
+      if (notify_data_len < 0)
+      {
+         client_p->peer_client->valid = 0;
+         client_p->peer_client->first_packet = 0;
+         client_p->peer_client->group_id = 0;
+         client_p->peer_client->peer_client = NULL;
+         shutdown(client_p->peer_client->fd, SHUT_RDWR);
+         close(client_p->peer_client->fd);
+         client_p->peer_client->fd = -1;
+         client_p->peer_client = NULL;
+      }
+      else
+      {
+         if (!client_p->peer_client->first_packet)
+         {
+            client_p->peer_client->first_packet = 1;
+            //print_data(data, data_len);
+         }
+      }
+      #endif
+
       return;
    }
 
@@ -290,7 +335,6 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
                            uint16 group_id = ntohs(*((uint16 *)(field_p->data + MSG_FIELD_COMMAND_LENGTH)));
                            printf("recv client register:group_id=0x%x\r\n", group_id);
 
-                           client_p->group_id = group_id;
 
                            for (j = 0; j < MAX_TCP_CLIENT_NUM; j++)
                            {
@@ -302,6 +346,8 @@ static void process_client_data(tcp_client_t *client_p, uint8_t *data, int data_
                                  break;
                               }
                            }
+
+                           client_p->group_id = group_id;
                         }
                         else
                         {
@@ -377,6 +423,7 @@ static OSAL_THREAD_FUNC server_listen_func(void *ptr)
             server_p->clients[i].group_id = 0;
             server_p->clients[i].peer_client = NULL;
             server_p->clients[i].recv_state = RECV_MAGIC;
+            server_p->clients[i].first_packet = 0;
 
             server_p->clients[i].valid = 1;
 
@@ -498,6 +545,7 @@ static OSAL_THREAD_FUNC server_receive_func(void *ptr)
                               printf("client err(bytes < 0) : disconnect from group:0x%x, recv_number=%d\r\n", server_p->clients[i].group_id, recv_number);
 
                               server_p->clients[i].valid = 0;
+                              server_p->clients[i].group_id = 0;
                               close(server_p->clients[i].fd);
                               server_p->clients[i].fd = -1;
                            }
@@ -518,6 +566,7 @@ static OSAL_THREAD_FUNC server_receive_func(void *ptr)
                               printf("client err() : disconnect from group:0x%x\r\n", server_p->clients[i].group_id);
 
                               server_p->clients[i].valid = 0;
+                              server_p->clients[i].group_id = 0;
                               close(server_p->clients[i].fd);
                               server_p->clients[i].fd = -1;
                               break;

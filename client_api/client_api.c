@@ -402,6 +402,8 @@ static void *client_receive_func(void *ptr)
     fd_set readfds;
     struct timeval timeout;
     int maxfd = -1;
+    #define MAX_BUF_LEN (1*1024*1024)
+    static uint8_t buf[MAX_BUF_LEN] = {0};
 
     if (!client_p)
     {
@@ -446,8 +448,6 @@ static void *client_receive_func(void *ptr)
                 int recv_number = 0;
                 while (1)
                 {
-                    uint8_t buf[1024] = {0};
-
                     // printf("before recv \r\n");
                     int bytes = recv(client_p->fd, buf, sizeof(buf), MSG_DONTWAIT);
                     // printf("recv:bytes=%d\r\n", bytes);
@@ -529,8 +529,11 @@ int connect_server(const char *server_ip, unsigned short  group_id, recv_func_cb
         goto err_out;
     }
 
-    //int send_buf_size = 9 * 1024 * 1024;
-    //setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &send_buf_size, sizeof(send_buf_size));
+    int send_buf_size = 9 * 1024 * 1024;
+    setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &send_buf_size, sizeof(send_buf_size));
+
+    int recv_buf_size = 12 * 1024 * 1024;
+    setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &recv_buf_size, sizeof(recv_buf_size));
 
     #if 0
     queue_init(&queue);
@@ -630,7 +633,7 @@ static int send_client_data(const unsigned char * data, int data_len)
         return ERR_SEND_CMD_FAIL;
     }
 
-    printf("---111 send data_len%d, time=%ld.%ld.%ld \r\n", data_len, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
+    //printf("---111 send data_len%d, time=%ld.%ld.%ld \r\n", data_len, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
 
     send_num = send(client.fd, data, data_len, 0);
     if (send_num != data_len)
@@ -645,8 +648,8 @@ static int send_client_data(const unsigned char * data, int data_len)
         result = ERR_SEND_CMD_FAIL;
     }
 
-    gettimeofday(&tv, NULL);
-    printf("---222 send data_len%d, time=%ld.%ld.%ld \r\n", data_len, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
+    //gettimeofday(&tv, NULL);
+    //printf("---222 send data_len%d, time=%ld.%ld.%ld \r\n", data_len, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
 
     return result;
 }
@@ -678,13 +681,19 @@ int transfer_data(const unsigned char * data, int data_len)
     //int ret = ERR_OK;
     unsigned char * p = NULL;
     int check_data_len = MAX_CHECK_DATA_LEN;
+    
 
-    //struct timeval tv;
-	//gettimeofday(&tv, NULL);
+    struct timeval tv;
+	gettimeofday(&tv, NULL);
     //printf("   ### 111 send data_len%d, time=%ld.%ld.%ld \r\n", data_len, tv.tv_sec, tv.tv_usec / 1000, tv.tv_usec % 1000);
 
     unsigned char header[FIELD_MAGIC_LEN + FIELD_LENGTH_LEN + MSG_FIELD_COMMAND_LENGTH] = {0x00};  // 包头模板
     unsigned char footer[FIELD_CHECKSUM_LEN] = {0x00, 0x00};  // 包尾模板
+
+    if (client.fd < 0)
+    {
+        return ERR_SEND_CMD_FAIL;
+    }
 
     struct iovec iov[3];
     iov[0].iov_base = header;
